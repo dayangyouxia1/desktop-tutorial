@@ -1,0 +1,53 @@
+MNIST
+	--data
+	
+	--student_data
+		--2024111111_MNISTData
+		--2024111112_MNISTData
+			--0.png
+			--1.png
+			--...
+			--label.csv
+	
+	--mnistData
+		--mnist_test
+			--0
+			--1
+			--..
+			--9
+		--mnist_train
+			--0
+			--1
+			--..
+			--9
+		--test_data
+		--train_data
+		--make_test.py
+		--make_train.py
+	
+	--train_data
+		--0.png
+		--1.png
+		--...
+		--label.csv
+		
+	--test_data
+		--80.png
+		--81.png
+		--..
+		--label.csv
+	
+	--add_test_data.py
+	--add_train_data.py
+	
+	--Recognition.py
+	--Recognition_with_attenton.py
+	--Recognition_with_data.py
+	--Recognition_with_data_and_attenton.py
+	
+	--test.py
+	--score.py
+	
+Data_Enhancement
+	--data_enhancement.py
+	--kitten.jpg
