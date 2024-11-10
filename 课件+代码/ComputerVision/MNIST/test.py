@@ -19,10 +19,10 @@ pipeline = transforms.Compose([
     transforms.Normalize((0.1307,), (0.3081,))  # 进行归一化处理，标准化像素值
 ])
 
-from Recognition import Digit
+from Recognition_with_data_and_attention import Digit
 
 model = Digit().to(DEVICE)
-model.load_state_dict(torch.load("mnist_cnn.pt"))
+model.load_state_dict(torch.load("mnist_cnn_with_data_and_attention.pt"))
 model.eval()
 
 # 自定义数据集类
@@ -57,7 +57,7 @@ class CustomDataset(Dataset):
 
 BATCH_SIZE = 16  # 批处理，每次处理的数据
 # 创建自定义数据集实例
-custom_dataset = CustomDataset("test_data", "test_data/label.csv", transform=pipeline)
+custom_dataset = CustomDataset("test_data", "/workspaces/desktop-tutorial/课件+代码/ComputerVision/MNIST/test_data/label.csv", transform=pipeline)
 custom_loader = DataLoader(custom_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 # 保存预测结果到 CSV 文件

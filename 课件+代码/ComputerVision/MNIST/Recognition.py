@@ -11,11 +11,27 @@ BATCH_SIZE = 16 # 批处理，每次处理的数据
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  #使用CPU还是GPU
 EPOCHS = 10  # 轮次，一个数据集循环运行几次
 
+# pipeline = transforms.Compose([
+#     transforms.ToPILImage(),  # 转换为 PIL 图像
+#     transforms.Resize((28, 28)),  # 将图像大小调整为 28x28 像素。
+#     transforms.ToTensor(),  # 将图像转换为 PyTorch 张量，并将像素值缩放到 [0, 1]。
+#     transforms.Normalize((0.1307,), (0.3081,))  # 进行归一化处理，标准化像素值。
+# ])
+# 数据增强技术，提高模型泛化能力
 pipeline = transforms.Compose([
     transforms.ToPILImage(),  # 转换为 PIL 图像
-    transforms.Resize((28, 28)),  # 将图像大小调整为 28x28 像素。
-    transforms.ToTensor(),  # 将图像转换为 PyTorch 张量，并将像素值缩放到 [0, 1]。
-    transforms.Normalize((0.1307,), (0.3081,))  # 进行归一化处理，标准化像素值。
+    transforms.Resize((28, 28)),  # 调整大小
+    transforms.RandomAffine(0, translate=(0.1, 0.1)),  # 随机平移
+    transforms.RandomRotation((-10,10)), # 随机旋转 [-10, 10] 度
+    transforms.ToTensor(),  # 转换为张量
+    transforms.Normalize((0.1307,), (0.3081,))  # 归一化
+])
+
+test_pipeline = transforms.Compose([
+    transforms.ToPILImage(),  # 转换为 PIL 图像
+    transforms.Resize((28, 28)),  # 调整大小
+    transforms.ToTensor(),  # 转换为张量
+    transforms.Normalize((0.1307,), (0.3081,))  # 归一化
 ])
 
 
@@ -54,25 +70,35 @@ class CustomDataset(Dataset):
 class Digit(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv2d(1, 10, 5)  # 1: 灰度图片的通道，10：输出通道，5：kernel
-        self.conv2 = nn.Conv2d(10, 20, 3)  # 10: 输入通道，20: 输出通道，3: kernel
-        self.fc1 = nn.Linear(20 * 10 * 10, 500)  # 20*10*10: 输入通道， 500: 输出通道
-        self.fc2 = nn.Linear(500, 10)  # 500: 输入通道，10:输出通道
+        self.conv1 = nn.Conv2d(1, 32, 3, padding=1)  # More filters (32) and smaller kernel size (3x3)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
+        
+        self.fc1 = nn.Linear(128 * 3 * 3, 256)  # Adjusted for new feature map size
+        self.dropout1 = nn.Dropout(0.4)  # Add dropout for regularization
+        self.fc2 = nn.Linear(256, 128)
+        self.dropout2 = nn.Dropout(0.4)
+        self.fc3 = nn.Linear(128, 10)
 
     def forward(self, x):
-        input_size = x.size(0)  # batch_size
-        x = self.conv1(x)  # 输入: batch*1*28*28, 输出: batch*10*24*24 （28-5+1）
-        x = F.relu(x)  # 保持shape不变，输出：batch*10*24*24
-        x = F.max_pool2d(x, 2, 2)  # 输入：batch*10*24*24, 输出: batch*10*12*12
-        x = self.conv2(x)  # 输入: batch*10*12*12, 输出: batch*20*10*10
-        x = F.relu(x)  # 保持shape不变，输出：batch*20*10*10
-        x = x.view(input_size, -1)  # 拉平，-1 自动计算维度， 20*10*10=2000
-        x = self.fc1(x)  # 输入: batch*2000, 输出: batch*500
-        x = F.relu(x)  # 保持shape不变，输出: batch*500
-        x = self.fc2(x)  # 输入: batch*500, 输出: 10
-        output = F.log_softmax(x, dim=1)  # 计算分类后，每个数字的概率值
-
-        return output
+        x = F.relu(self.bn1(self.conv1(x)))  # Conv -> BatchNorm -> ReLU
+        x = F.max_pool2d(x, 2, 2)  # 28x28 -> 14x14
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.max_pool2d(x, 2, 2)  # 14x14 -> 7x7
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = F.max_pool2d(x, 2, 2)  # 7x7 -> 3x3
+        
+        x = x.view(x.size(0), -1)  # Flatten for FC layer
+        x = F.relu(self.fc1(x))
+        x = self.dropout1(x)  # Apply dropout
+        x = F.relu(self.fc2(x))
+        x = self.dropout2(x)  # Apply dropout
+        x = self.fc3(x)
+        
+        return F.log_softmax(x, dim=1)  # Output log-softmax for classification
 
 
 # 7 定义训练方法
@@ -128,8 +154,8 @@ if __name__ == '__main__':
 
     # 和Recognition的区别是，这里读取本地数据集
     # 创建自定义数据集实例
-    train_set = CustomDataset("train_data", "train_data/label.csv", transform=pipeline)
-    test_set = CustomDataset("test_data", "test_data/label.csv", transform=pipeline)
+    train_set = CustomDataset("train_data", "/workspaces/desktop-tutorial/课件+代码/ComputerVision/MNIST/train_data/label.csv", transform=pipeline)
+    test_set = CustomDataset("test_data", "/workspaces/desktop-tutorial/课件+代码/ComputerVision/MNIST/test_data/label.csv", transform=pipeline)
 
     # 下载数据集
     # train_set = datasets.MNIST("data", train=True, download=True, transform=pipeline)

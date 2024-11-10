@@ -10,18 +10,27 @@ import cv2
 
 start_time=time.time()
 
-BATCH_SIZE = 16 # 批处理，每次处理的数据
+BATCH_SIZE = 32 # 批处理，每次处理的数据
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  #使用CPU还是GPU
-EPOCHS = 10  # 轮次，一个数据集循环运行几次
+EPOCHS = 15  # 轮次，一个数据集循环运行几次
+
+from torchvision import transforms
 
 pipeline = transforms.Compose([
-    transforms.ToPILImage(),  # 转换为 PIL 图像
-    transforms.Resize((28, 28)),  # 调整大小
-    transforms.RandomAffine(0, translate=(0.1, 0.1)),  # 随机平移
-    transforms.RandomRotation((-10,10)), # 随机旋转 [-10, 10] 度
-    transforms.ToTensor(),  # 转换为张量
-    transforms.Normalize((0.1307,), (0.3081,))  # 归一化
+    transforms.ToPILImage(),  # Convert to PIL image
+    transforms.Resize((28, 28)),  # Resize to 28x28
+    transforms.RandomAffine(
+        degrees=10,  # Rotation up to ±10 degrees
+        translate=(0.1, 0.1),  # Allow up to 10% translation
+        scale=(0.9, 1.1),  # Allow slight zoom-in and zoom-out
+        shear=(-5, 5)  # Allow shearing of up to ±5 degrees
+    ),
+    transforms.RandomPerspective(distortion_scale=0.1, p=0.5),  # Apply perspective transformation with 50% probability
+    transforms.ColorJitter(brightness=0.2, contrast=0.2),  # Add random changes to brightness and contrast
+    transforms.ToTensor(),  # Convert to tensor
+    transforms.Normalize((0.1307,), (0.3081,))  # Normalize using dataset mean and std
 ])
+
 
 test_pipeline = transforms.Compose([
     transforms.ToPILImage(),  # 转换为 PIL 图像
@@ -62,57 +71,113 @@ class CustomDataset(Dataset):
 
 
 # 自注意力层定义
+
+
 class SelfAttention(nn.Module):
-    def __init__(self, in_dim):
+    def __init__(self, in_dim, num_heads=4, dropout=0.1):
         super(SelfAttention, self).__init__()
-        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim//8, kernel_size=1)
-        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim//8, kernel_size=1)
+        self.num_heads = num_heads
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
         self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
         self.gamma = nn.Parameter(torch.zeros(1))
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm([in_dim, 28, 28])  # Assumes input size of 28x28; adjust if needed.
 
     def forward(self, x):
         batch_size, channels, width, height = x.size()
-        proj_query = self.query_conv(x).view(batch_size, -1, width*height).permute(0, 2, 1)  # B * (N) * C
-        proj_key = self.key_conv(x).view(batch_size, -1, width*height)  # B * C * (N)
-        energy = torch.bmm(proj_query, proj_key)  # batch的对应矩阵
-        attention = torch.softmax(energy, dim=-1)  # batch
-        proj_value = self.value_conv(x).view(batch_size, -1, width*height)  # batch*（N）*channels
+        proj_query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)  # B * N * C
+        proj_key = self.key_conv(x).view(batch_size, -1, width * height)  # B * C * N
+        energy = torch.bmm(proj_query, proj_key)  # B * N * N
+        attention = self.dropout(torch.softmax(energy / (channels ** 0.5), dim=-1))  # Dropout and scaling
+
+        proj_value = self.value_conv(x).view(batch_size, -1, width * height)  # B * C * N
         out = torch.bmm(proj_value, attention.permute(0, 2, 1)).view(batch_size, channels, width, height)
-        out = self.gamma*out + x
+        out = self.gamma * out + x  # Residual connection
+        out = self.norm(out)  # Layer normalization
+
         return out
 
 
-# 5 构建网络模型
+
+def weight_variable(shape):
+    return nn.init.trunc_normal_(torch.empty(shape), std=0.1)
+
+def bias_variable(shape):
+    return torch.full(shape, 0.1)
+
 class Digit(nn.Module):
     def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(1, 10, 5)  # 1: 灰度图片的通道，10：输出通道，5：kernel
-        self.conv2 = nn.Conv2d(10, 20, 3)  # 10: 输入通道，20: 输出通道，3: kernel
-        self.selfattn1 = SelfAttention(10)  # 添加自注意力层
-        self.selfattn2 = SelfAttention(20)  # 添加自注意力层
-        self.fc1 = nn.Linear(20 * 10 * 10, 500)  # 20*10*10: 输入通道， 500: 输出通道
-        self.fc2 = nn.Linear(500, 10)  # 500: 输入通道，10:输出通道
+        super(Digit, self).__init__()
+
+        # Convolutional Layers with Batch Normalization
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, padding=2)  # 5x5 kernel
+        self.bn1 = nn.BatchNorm2d(32)
+
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, padding=2)  # 5x5 kernel
+        self.bn2 = nn.BatchNorm2d(64)
+
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)  # 3x3 kernel for deeper features
+        self.bn3 = nn.BatchNorm2d(128)
+        # 添加自注意力层
+        self.selfattn1 = SelfAttention(32)
+        self.selfattn2 = SelfAttention(256)
+        
+
+        # Fully Connected Layers
+        self.fc1 = nn.Linear(3 * 3 * 128, 512)  # Adjusted size for the new structure
+        self.bn4 = nn.BatchNorm2d(512)
+        self.fc2 = nn.Linear(512, 256)
+        self.bn6 = nn.BatchNorm1d(256)
+        self.fc3 = nn.Linear(256, 10)  # Output layer for 10 classes
+
+        # Dropout for regularization
+        self.dropout = nn.Dropout(0.5)
+
+        # Initialize weights and biases
+        self.init_weights()
+
+    def init_weights(self):
+        # Initialize weights with truncated normal and biases with constant 0.1
+        weight_variable(self.conv1.weight.shape).copy_(self.conv1.weight)
+        bias_variable(self.conv1.bias.shape).copy_(self.conv1.bias)
+        weight_variable(self.conv2.weight.shape).copy_(self.conv2.weight)
+        bias_variable(self.conv2.bias.shape).copy_(self.conv2.bias)
+        weight_variable(self.conv3.weight.shape).copy_(self.conv3.weight)
+        bias_variable(self.conv3.bias.shape).copy_(self.conv3.bias)
+        weight_variable(self.fc1.weight.shape).copy_(self.fc1.weight)
+        bias_variable(self.fc1.bias.shape).copy_(self.fc1.bias)
+        weight_variable(self.fc2.weight.shape).copy_(self.fc2.weight)
+        bias_variable(self.fc2.bias.shape).copy_(self.fc2.bias)
+        weight_variable(self.fc3.weight.shape).copy_(self.fc3.weight)
+        bias_variable(self.fc3.bias.shape).copy_(self.fc3.bias)
 
     def forward(self, x):
-        input_size = x.size(0)  # batch_size
-        x = self.conv1(x)  # 输入: batch*1*28*28, 输出: batch*10*24*24 （28-5+1）
-        x = self.selfattn1(x)  # 自注意力层
-        x = F.relu(x)  # 保持shape不变，输出：batch*10*24*24
-        x = F.max_pool2d(x, 2, 2)  # 输入：batch*10*24*24, 输出: batch*10*12*12
+        # First convolutional layer with batch normalization, relu, and max pooling
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.max_pool2d(x, 2, 2)  # Pooling to 14x14
 
-        x = self.conv2(x)  # 输入: batch*10*12*12, 输出: batch*20*10*10
-        x = self.selfattn2(x)  # 自注意力层
-        x = F.relu(x)  # 保持shape不变，输出：batch*20*10*10
+        # Second convolutional layer with batch normalization, relu, and max pooling
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.max_pool2d(x, 2, 2)  # Pooling to 7x7
 
-        x = x.view(input_size, -1)  # 拉平，-1 自动计算维度， 20*10*10=2000
+        # Third convolutional layer with batch normalization, relu, and max pooling
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = F.max_pool2d(x, 2, 2)  # Pooling to 3x3
 
-        x = self.fc1(x)  # 输入: batch*2000, 输出: batch*500
-        x = F.relu(x)  # 保持shape不变，输出: batch*500
+        # Flatten for fully connected layer
+        x = x.view(-1, 3 * 3 * 128)
 
-        x = self.fc2(x)  # 输入: batch*500, 输出: 10
-        output = F.log_softmax(x, dim=1)  # 计算分类后，每个数字的概率值
+        # Fully connected layers with dropout
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)
+        
+        x = F.relu(self.fc2(x))
+        x = self.dropout(x)
 
-        return output
+        # Output layer with softmax
+        x = self.fc3(x)
+        return F.log_softmax(x, dim=1)  # Log softmax for classification
 
 
 # 7 定义训练方法
