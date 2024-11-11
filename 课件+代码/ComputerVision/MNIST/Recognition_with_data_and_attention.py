@@ -285,10 +285,12 @@ if __name__ == '__main__':
     model = Digit().to(DEVICE)
     # 6 定义优化器
     optimizer = optim.Adam(model.parameters())
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
     # 9 调用方法(7和8)
 
     for epoch in range(1, EPOCHS+1):
+        lr_scheduler.step()
         train_model(model, DEVICE, train_loader, optimizer, epoch)
         ceshi(model, DEVICE, test_loader)
 
