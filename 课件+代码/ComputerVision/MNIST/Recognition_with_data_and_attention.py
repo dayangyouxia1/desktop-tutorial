@@ -82,10 +82,11 @@ class SelfAttention(nn.Module):
         self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
         self.gamma = nn.Parameter(torch.zeros(1))
         self.dropout = nn.Dropout(dropout)
-        self.norm = nn.LayerNorm([in_dim, 28, 28])  # Assumes input size of 28x28; adjust if needed.
+        self.norm = nn.LayerNorm(in_dim)  # 只归一化通道维度
 
     def forward(self, x):
         batch_size, channels, width, height = x.size()
+        
         proj_query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)  # B * N * C
         proj_key = self.key_conv(x).view(batch_size, -1, width * height)  # B * C * N
         energy = torch.bmm(proj_query, proj_key)  # B * N * N
@@ -94,10 +95,13 @@ class SelfAttention(nn.Module):
         proj_value = self.value_conv(x).view(batch_size, -1, width * height)  # B * C * N
         out = torch.bmm(proj_value, attention.permute(0, 2, 1)).view(batch_size, channels, width, height)
         out = self.gamma * out + x  # Residual connection
-        out = self.norm(out)  # Layer normalization
+        
+        # 调整 x 的形状来适配 LayerNorm
+        out = out.view(batch_size, channels, -1).permute(0, 2, 1)  # 调整为 (B, N, C)
+        out = self.norm(out)
+        out = out.permute(0, 2, 1).view(batch_size, channels, width, height)  # 恢复形状
 
         return out
-
 
 
 def weight_variable(shape):
@@ -121,7 +125,7 @@ class Digit(nn.Module):
         self.bn3 = nn.BatchNorm2d(128)
         # 添加自注意力层
         self.selfattn1 = SelfAttention(32)
-        self.selfattn2 = SelfAttention(256)
+        self.selfattn2 = SelfAttention(128)
         
 
         # Fully Connected Layers
@@ -154,7 +158,7 @@ class Digit(nn.Module):
 
     def forward(self, x):
         # First convolutional layer with batch normalization, relu, and max pooling
-        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.selfattn1(self.bn1(self.conv1(x))))
         x = F.max_pool2d(x, 2, 2)  # Pooling to 14x14
 
         # Second convolutional layer with batch normalization, relu, and max pooling
@@ -162,11 +166,11 @@ class Digit(nn.Module):
         x = F.max_pool2d(x, 2, 2)  # Pooling to 7x7
 
         # Third convolutional layer with batch normalization, relu, and max pooling
-        x = F.relu(self.bn3(self.conv3(x)))
+        x = F.relu(self.selfattn2(self.bn3(self.conv3(x))))
         x = F.max_pool2d(x, 2, 2)  # Pooling to 3x3
 
         # Flatten for fully connected layer
-        x = x.view(-1, 3 * 3 * 128)
+        x = x.reshape(-1, 3 * 3 * 128)
 
         # Fully connected layers with dropout
         x = F.relu(self.fc1(x))
@@ -177,8 +181,7 @@ class Digit(nn.Module):
 
         # Output layer with softmax
         x = self.fc3(x)
-        return F.log_softmax(x, dim=1)  # Log softmax for classification
-
+        return F.log_softmax(x, dim=1)  # Log softmax for classification 
 
 # 7 定义训练方法
 
